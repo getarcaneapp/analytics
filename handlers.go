@@ -16,6 +16,7 @@ var statsCache = NewTTLCache[InstancesStats](15 * time.Minute)
 type HeartbeatRequest struct {
 	InstanceID string `json:"instance_id"`
 	Version    string `json:"version"`
+	ServerType string `json:"server_type"`
 }
 
 func HeartbeatHandler(db *sql.DB) http.HandlerFunc {
@@ -30,6 +31,11 @@ func HeartbeatHandler(db *sql.DB) http.HandlerFunc {
 		// Validate request
 		if req.InstanceID == "" || req.Version == "" {
 			http.Error(w, "instance_id and version are required", http.StatusBadRequest)
+			return
+		}
+
+		if req.ServerType != "" && req.ServerType != "manager" && req.ServerType != "agent" {
+			http.Error(w, "server_type must be 'manager' or 'agent'", http.StatusBadRequest)
 			return
 		}
 
@@ -48,7 +54,7 @@ func HeartbeatHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		// Store/update instance
-		err = UpsertInstance(r.Context(), db, req.InstanceID, req.Version)
+		err = UpsertInstance(r.Context(), db, req.InstanceID, req.Version, req.ServerType)
 		if err != nil {
 			log.Printf("Error upserting instance: %v", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -96,6 +102,27 @@ func StatsHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
+		inactiveInstances, err := GetInactiveInstances(r.Context(), db)
+		if err != nil {
+			log.Printf("Error getting inactive instances: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		instancesByType, err := GetInstancesByType(r.Context(), db)
+		if err != nil {
+			log.Printf("Error getting instances by type: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		instancesByVersion, err := GetInstancesByVersion(r.Context(), db)
+		if err != nil {
+			log.Printf("Error getting instances by version: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
 		chartData, err := GetInstancesOverTime(r.Context(), db, timeframe)
 		if err != nil {
 			log.Printf("Error getting chart data: %v", err)
@@ -104,8 +131,11 @@ func StatsHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		data := InstancesStats{
-			Total:   totalInstances,
-			History: chartData,
+			Total:     totalInstances,
+			Inactive:  inactiveInstances,
+			ByType:    instancesByType,
+			ByVersion: instancesByVersion,
+			History:   chartData,
 		}
 
 		// Store in cache

@@ -11,8 +11,11 @@ import (
 )
 
 type InstancesStats struct {
-	Total   int                `json:"total"`
-	History []InstancesHistory `json:"history"`
+	Total     int                `json:"total"`
+	Inactive  int                `json:"inactive"`
+	ByType    map[string]int     `json:"by_type"`
+	ByVersion map[string]int     `json:"by_version"`
+	History   []InstancesHistory `json:"history"`
 }
 
 type InstancesHistory struct {
@@ -36,16 +39,20 @@ func DoesInstanceExist(parentCtx context.Context, db *sql.DB, instanceID string)
 	return exists, nil
 }
 
-func UpsertInstance(parentCtx context.Context, db *sql.DB, instanceID, version string) error {
+func UpsertInstance(parentCtx context.Context, db *sql.DB, instanceID, version, serverType string) error {
 	now := time.Now()
 
 	// Upsert the instance
 	const query = `
-	INSERT INTO instances (id, first_seen, last_seen, latest_version)
-	VALUES (?, ?, ?, ?)
+	INSERT INTO instances (id, first_seen, last_seen, latest_version, server_type)
+	VALUES (?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		last_seen = excluded.last_seen,
-		latest_version = excluded.latest_version
+		latest_version = excluded.latest_version,
+		server_type = CASE
+			WHEN excluded.server_type IS NULL OR excluded.server_type = '' THEN instances.server_type
+			ELSE excluded.server_type
+		END
 	`
 
 	ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
@@ -53,21 +60,18 @@ func UpsertInstance(parentCtx context.Context, db *sql.DB, instanceID, version s
 	_, err := db.ExecContext(
 		ctx,
 		query,
-		instanceID, now, now, version,
+		instanceID, now, now, version, serverType,
 	)
 
 	return err
 }
 
 func GetTotalInstances(parentCtx context.Context, db *sql.DB) (int, error) {
-	// Only count instances that:
-	// 1. Are older than 1 day
-	// 2. Have been active in the last 2 days
+	// Only count instances that have been active in the last 2 days.
 	const query = `
 	SELECT COUNT(*) 
 	FROM instances 
-	WHERE first_seen < datetime('now', '-1 day') 
-	AND last_seen >= datetime('now', '-2 days')
+	WHERE last_seen >= datetime('now', '-2 days')
 	`
 
 	ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
@@ -77,13 +81,103 @@ func GetTotalInstances(parentCtx context.Context, db *sql.DB) (int, error) {
 	return count, err
 }
 
+func GetInactiveInstances(parentCtx context.Context, db *sql.DB) (int, error) {
+	const query = `
+	SELECT COUNT(*) 
+	FROM instances 
+	WHERE last_seen < datetime('now', '-2 days')
+	`
+
+	ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
+	defer cancel()
+	var count int
+	err := db.QueryRowContext(ctx, query).Scan(&count)
+	return count, err
+}
+
+func GetInstancesByType(parentCtx context.Context, db *sql.DB) (map[string]int, error) {
+	const query = `
+	SELECT 
+		CASE 
+			WHEN server_type IS NULL OR server_type = '' THEN 'unknown'
+			ELSE server_type
+		END as server_type,
+		COUNT(*) as count
+	FROM instances
+	WHERE last_seen >= datetime('now', '-2 days')
+	GROUP BY CASE 
+		WHEN server_type IS NULL OR server_type = '' THEN 'unknown'
+		ELSE server_type
+	END
+	`
+
+	ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
+	defer cancel()
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var serverType string
+		var count int
+		if err := rows.Scan(&serverType, &count); err != nil {
+			return nil, err
+		}
+		counts[serverType] = count
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return counts, nil
+}
+
+func GetInstancesByVersion(parentCtx context.Context, db *sql.DB) (map[string]int, error) {
+	const query = `
+	SELECT 
+		latest_version as version,
+		COUNT(*) as count
+	FROM instances
+	WHERE last_seen >= datetime('now', '-2 days')
+	GROUP BY latest_version
+	`
+
+	ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
+	defer cancel()
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var version string
+		var count int
+		if err := rows.Scan(&version, &count); err != nil {
+			return nil, err
+		}
+		counts[version] = count
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return counts, nil
+}
+
 func GetInstancesOverTime(parentCtx context.Context, db *sql.DB, timeframe string) ([]InstancesHistory, error) {
 	var query string
 
 	switch timeframe {
 	case "daily":
 		// Get daily instance counts for the last 30 days
-		// Only include instances that are older than 1 day and were active in the last 2 days
+		// Only include instances that were active in the last 2 days
 		query = `
 		SELECT 
 			DATE(first_seen) as date,
@@ -91,18 +185,16 @@ func GetInstancesOverTime(parentCtx context.Context, db *sql.DB, timeframe strin
 			(SELECT COUNT(*) 
 			 FROM instances i2 
 			 WHERE DATE(i2.first_seen) <= DATE(i1.first_seen)
-			 AND i2.first_seen < datetime('now', '-1 day')
 			 AND i2.last_seen >= datetime('now', '-2 days')) as cumulative_count
 		FROM instances i1
 		WHERE first_seen >= datetime('now', '-30 days')
-		AND first_seen < datetime('now', '-1 day')
 		AND last_seen >= datetime('now', '-2 days')
 		GROUP BY DATE(first_seen)
 		ORDER BY date
 		`
 	case "monthly":
 		// Get monthly instance counts for all time
-		// Only include instances that are older than 1 day and were active in the last 2 days
+		// Only include instances that were active in the last 2 days
 		query = `
 		SELECT 
 			strftime('%Y-%m', first_seen) as date,
@@ -110,11 +202,9 @@ func GetInstancesOverTime(parentCtx context.Context, db *sql.DB, timeframe strin
 			(SELECT COUNT(*) 
 			 FROM instances i2 
 			 WHERE strftime('%Y-%m', i2.first_seen) <= strftime('%Y-%m', i1.first_seen)
-			 AND i2.first_seen < datetime('now', '-1 day')
 			 AND i2.last_seen >= datetime('now', '-2 days')) as cumulative_count
 		FROM instances i1
-		WHERE first_seen < datetime('now', '-1 day')
-		AND last_seen >= datetime('now', '-2 days')
+		WHERE last_seen >= datetime('now', '-2 days')
 		GROUP BY strftime('%Y-%m', first_seen)
 		ORDER BY date
 		`
@@ -165,7 +255,8 @@ func initDB() (*sql.DB, error) {
         id TEXT PRIMARY KEY,
         first_seen DATETIME NOT NULL,
         last_seen DATETIME NOT NULL,
-        latest_version TEXT NOT NULL
+        latest_version TEXT NOT NULL,
+        server_type TEXT NOT NULL DEFAULT ''
     );
 
     CREATE INDEX IF NOT EXISTS idx_first_seen ON instances(first_seen);
@@ -176,6 +267,8 @@ func initDB() (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	_, _ = db.Exec(`ALTER TABLE instances ADD COLUMN server_type TEXT DEFAULT ''`)
 
 	return db, nil
 }

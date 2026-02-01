@@ -1,0 +1,17 @@
+services:
+  analytics:
+    # image: ghcr.io/getarcaneapp/analytics:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: arcane-analytics
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - analytics-data:/app/data
+    environment:
+      - PORT=8080
+
+volumes:
+  analytics-data:
