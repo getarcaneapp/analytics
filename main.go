@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -20,6 +21,11 @@ func main() {
 	}
 	if plausibleTracker != nil {
 		log.Printf("Plausible heartbeat forwarding enabled for %s", os.Getenv("PLAUSIBLE_DOMAIN"))
+		if err := plausibleTracker.PrepareBackfill(context.Background(), db); err != nil {
+			log.Printf("Failed to prepare Plausible backfill: %v", err)
+		} else {
+			go runPlausibleBackfill(context.Background(), plausibleTracker, db)
+		}
 	}
 
 	// Set up HTTP handlers

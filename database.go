@@ -23,6 +23,14 @@ type InstancesHistory struct {
 	Count int    `json:"count"`
 }
 
+type PlausibleBackfillInstance struct {
+	ID         string
+	FirstSeen  time.Time
+	LastSeen   time.Time
+	Version    string
+	ServerType string
+}
+
 func DoesInstanceExist(parentCtx context.Context, db *sql.DB, instanceID string) (bool, error) {
 	const query = `
 	SELECT EXISTS(SELECT 1 FROM instances WHERE id = ?)
@@ -239,6 +247,106 @@ func GetInstancesOverTime(parentCtx context.Context, db *sql.DB, timeframe strin
 	return chartData, nil
 }
 
+func GetPlausibleBackfillCutoff(parentCtx context.Context, db *sql.DB, domain string) (time.Time, error) {
+	ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
+	defer cancel()
+
+	now := time.Now().UTC()
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO plausible_backfill_state (domain, cutoff)
+		VALUES (?, ?)
+		ON CONFLICT(domain) DO NOTHING
+	`, domain, now)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to initialize Plausible backfill: %w", err)
+	}
+
+	var cutoff time.Time
+	if err := db.QueryRowContext(ctx, `
+		SELECT cutoff
+		FROM plausible_backfill_state
+		WHERE domain = ?
+	`, domain).Scan(&cutoff); err != nil {
+		return time.Time{}, fmt.Errorf("failed to get Plausible backfill cutoff: %w", err)
+	}
+
+	return cutoff, nil
+}
+
+func GetPendingPlausibleBackfillInstances(parentCtx context.Context, db *sql.DB, domain string, cutoff time.Time, limit int) ([]PlausibleBackfillInstance, error) {
+	ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
+	defer cancel()
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, first_seen, last_seen, latest_version, server_type
+		FROM instances i
+		WHERE julianday(i.first_seen) <= julianday(?)
+		AND NOT EXISTS (
+			SELECT 1
+			FROM plausible_backfill_instances p
+			WHERE p.domain = ? AND p.instance_id = i.id
+		)
+		ORDER BY i.first_seen, i.id
+		LIMIT ?
+	`, cutoff, domain, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query Plausible backfill instances: %w", err)
+	}
+	defer rows.Close()
+
+	instances := make([]PlausibleBackfillInstance, 0, limit)
+	for rows.Next() {
+		var instance PlausibleBackfillInstance
+		if err := rows.Scan(
+			&instance.ID,
+			&instance.FirstSeen,
+			&instance.LastSeen,
+			&instance.Version,
+			&instance.ServerType,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan Plausible backfill instance: %w", err)
+		}
+		instances = append(instances, instance)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate Plausible backfill instances: %w", err)
+	}
+
+	return instances, nil
+}
+
+func MarkPlausibleInstanceBackfilled(parentCtx context.Context, db *sql.DB, domain, instanceID string) error {
+	ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
+	defer cancel()
+
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO plausible_backfill_instances (domain, instance_id, synced_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(domain, instance_id) DO NOTHING
+	`, domain, instanceID, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("failed to mark Plausible instance as backfilled: %w", err)
+	}
+	return nil
+}
+
+func initPlausibleBackfillSchema(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS plausible_backfill_state (
+			domain TEXT PRIMARY KEY,
+			cutoff DATETIME NOT NULL
+		);
+
+		CREATE TABLE IF NOT EXISTS plausible_backfill_instances (
+			domain TEXT NOT NULL,
+			instance_id TEXT NOT NULL,
+			synced_at DATETIME NOT NULL,
+			PRIMARY KEY (domain, instance_id)
+		);
+	`)
+	return err
+}
+
 func initDB() (*sql.DB, error) {
 	if err := os.MkdirAll("./data", 0755); err != nil {
 		return nil, fmt.Errorf("failed to create data directory: %w", err)
@@ -269,6 +377,9 @@ func initDB() (*sql.DB, error) {
 	}
 
 	_, _ = db.Exec(`ALTER TABLE instances ADD COLUMN server_type TEXT DEFAULT ''`)
+	if err := initPlausibleBackfillSchema(db); err != nil {
+		return nil, fmt.Errorf("failed to initialize Plausible backfill schema: %w", err)
+	}
 
 	return db, nil
 }

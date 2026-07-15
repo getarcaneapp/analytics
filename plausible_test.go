@@ -1,20 +1,29 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/andrerfcsantos/go-plausible/plausible"
 )
 
 type recordingPlausibleClient struct {
-	event plausible.EventRequest
-	err   error
+	event      plausible.EventRequest
+	events     []plausible.EventRequest
+	err        error
+	failOnCall int
 }
 
 func (c *recordingPlausibleClient) PushEvent(event plausible.EventRequest) ([]byte, error) {
 	c.event = event
-	return nil, c.err
+	c.events = append(c.events, event)
+	if c.err != nil && (c.failOnCall == 0 || len(c.events) == c.failOnCall) {
+		return nil, c.err
+	}
+	return nil, nil
 }
 
 func TestPlausibleTrackerSendsHeartbeatEvent(t *testing.T) {
@@ -58,6 +67,9 @@ func TestPlausibleTrackerSendsHeartbeatEvent(t *testing.T) {
 	}
 	if event.Props["server_type"] != "manager" {
 		t.Errorf("expected server_type property manager, got %q", event.Props["server_type"])
+	}
+	if event.Props["source"] != "live" {
+		t.Errorf("expected live source property, got %q", event.Props["source"])
 	}
 	if _, exists := event.Props["instance_id"]; exists {
 		t.Error("instance_id must not be sent to Plausible")
@@ -127,5 +139,148 @@ func TestLoadPlausibleConfigRejectsPartialConfiguration(t *testing.T) {
 	_, _, err := loadPlausibleConfigFromEnv()
 	if err == nil {
 		t.Fatal("expected partial Plausible configuration to fail")
+	}
+}
+
+func TestPlausibleBackfillSendsExistingInstancesOnce(t *testing.T) {
+	db := newPlausibleBackfillTestDB(t)
+	firstSeen := time.Date(2025, time.January, 2, 3, 4, 5, 0, time.UTC)
+	lastSeen := firstSeen.Add(24 * time.Hour)
+	insertBackfillTestInstance(t, db, "instance-1", firstSeen, lastSeen, "1.2.3", "manager")
+	insertBackfillTestInstance(t, db, "instance-2", firstSeen.Add(time.Hour), lastSeen.Add(time.Hour), "1.2.4", "agent")
+
+	client := &recordingPlausibleClient{}
+	tracker := newBackfillTestTracker(client, "analytics.getarcane.app")
+
+	count, err := tracker.Backfill(context.Background(), db)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 backfilled instances, got %d", count)
+	}
+	if len(client.events) != 2 {
+		t.Fatalf("expected 2 Plausible events, got %d", len(client.events))
+	}
+
+	event := client.events[0]
+	if event.Props["source"] != "backfill" {
+		t.Errorf("expected backfill source, got %q", event.Props["source"])
+	}
+	if event.Props["first_seen"] != firstSeen.Format(time.RFC3339) {
+		t.Errorf("unexpected first_seen %q", event.Props["first_seen"])
+	}
+	if event.Props["last_seen"] != lastSeen.Format(time.RFC3339) {
+		t.Errorf("unexpected last_seen %q", event.Props["last_seen"])
+	}
+	if _, exists := event.Props["instance_id"]; exists {
+		t.Error("instance_id must not be sent in a backfill event")
+	}
+
+	count, err = tracker.Backfill(context.Background(), db)
+	if err != nil {
+		t.Fatalf("repeat backfill: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected repeat backfill to send 0 instances, got %d", count)
+	}
+	if len(client.events) != 2 {
+		t.Fatalf("repeat backfill sent duplicate events; got %d total", len(client.events))
+	}
+}
+
+func TestPlausibleBackfillExcludesInstancesCreatedAfterInitialCutoff(t *testing.T) {
+	db := newPlausibleBackfillTestDB(t)
+	client := &recordingPlausibleClient{}
+	tracker := newBackfillTestTracker(client, "analytics.getarcane.app")
+
+	if count, err := tracker.Backfill(context.Background(), db); err != nil || count != 0 {
+		t.Fatalf("initialize empty backfill: count=%d err=%v", count, err)
+	}
+
+	createdAfterCutoff := time.Now().UTC().Add(time.Minute)
+	insertBackfillTestInstance(t, db, "new-live-instance", createdAfterCutoff, createdAfterCutoff, "2.0.0", "agent")
+
+	if count, err := tracker.Backfill(context.Background(), db); err != nil || count != 0 {
+		t.Fatalf("backfill after new live instance: count=%d err=%v", count, err)
+	}
+	if len(client.events) != 0 {
+		t.Fatalf("expected no backfill events for a new live instance, got %d", len(client.events))
+	}
+}
+
+func TestPlausibleBackfillResumesAfterFailure(t *testing.T) {
+	db := newPlausibleBackfillTestDB(t)
+	seen := time.Date(2025, time.January, 2, 3, 4, 5, 0, time.UTC)
+	insertBackfillTestInstance(t, db, "instance-1", seen, seen, "1.0.0", "manager")
+	insertBackfillTestInstance(t, db, "instance-2", seen.Add(time.Hour), seen.Add(time.Hour), "1.0.1", "agent")
+
+	client := &recordingPlausibleClient{err: errors.New("plausible unavailable"), failOnCall: 2}
+	tracker := newBackfillTestTracker(client, "analytics.getarcane.app")
+
+	count, err := tracker.Backfill(context.Background(), db)
+	if err == nil {
+		t.Fatal("expected backfill failure")
+	}
+	if count != 1 {
+		t.Fatalf("expected one checkpointed instance before failure, got %d", count)
+	}
+
+	client.err = nil
+	client.failOnCall = 0
+	count, err = tracker.Backfill(context.Background(), db)
+	if err != nil {
+		t.Fatalf("resume backfill: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected resumed backfill to send only the remaining instance, got %d", count)
+	}
+}
+
+func newPlausibleBackfillTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+
+	_, err = db.Exec(`
+		CREATE TABLE instances (
+			id TEXT PRIMARY KEY,
+			first_seen DATETIME NOT NULL,
+			last_seen DATETIME NOT NULL,
+			latest_version TEXT NOT NULL,
+			server_type TEXT NOT NULL DEFAULT ''
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create instances table: %v", err)
+	}
+	if err := initPlausibleBackfillSchema(db); err != nil {
+		t.Fatalf("create backfill schema: %v", err)
+	}
+	return db
+}
+
+func insertBackfillTestInstance(t *testing.T, db *sql.DB, id string, firstSeen, lastSeen time.Time, version, serverType string) {
+	t.Helper()
+	_, err := db.Exec(`
+		INSERT INTO instances (id, first_seen, last_seen, latest_version, server_type)
+		VALUES (?, ?, ?, ?, ?)
+	`, id, firstSeen, lastSeen, version, serverType)
+	if err != nil {
+		t.Fatalf("insert test instance: %v", err)
+	}
+}
+
+func newBackfillTestTracker(client plausibleEventPusher, domain string) *plausibleHeartbeatTracker {
+	return &plausibleHeartbeatTracker{
+		client: client,
+		config: plausibleConfig{
+			Domain:   domain,
+			EventURL: "https://analytics.getarcane.app/heartbeat",
+		},
 	}
 }
