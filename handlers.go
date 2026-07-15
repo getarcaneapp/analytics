@@ -19,7 +19,12 @@ type HeartbeatRequest struct {
 	ServerType string `json:"server_type"`
 }
 
-func HeartbeatHandler(db *sql.DB) http.HandlerFunc {
+func HeartbeatHandler(db *sql.DB, trackers ...HeartbeatEventTracker) http.HandlerFunc {
+	var tracker HeartbeatEventTracker
+	if len(trackers) > 0 {
+		tracker = trackers[0]
+	}
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req HeartbeatRequest
 		err := json.NewDecoder(r.Body).Decode(&req)
@@ -62,6 +67,14 @@ func HeartbeatHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		log.Printf("Heartbeat received: Instance %s, Version %s", req.InstanceID, req.Version)
+		if tracker != nil {
+			tracker.TrackHeartbeat(HeartbeatEvent{
+				Version:    req.Version,
+				ServerType: req.ServerType,
+				UserAgent:  r.UserAgent(),
+				ClientIP:   clientIP,
+			})
+		}
 
 		w.WriteHeader(http.StatusOK)
 	}

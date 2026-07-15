@@ -14,6 +14,14 @@ func main() {
 	}
 	defer db.Close()
 
+	plausibleTracker, err := NewPlausibleHeartbeatTrackerFromEnv()
+	if err != nil {
+		log.Fatal("Failed to configure Plausible:", err)
+	}
+	if plausibleTracker != nil {
+		log.Printf("Plausible heartbeat forwarding enabled for %s", os.Getenv("PLAUSIBLE_DOMAIN"))
+	}
+
 	// Set up HTTP handlers
 	http.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -24,7 +32,7 @@ func main() {
 	})
 
 	http.HandleFunc("POST /heartbeat", func(w http.ResponseWriter, r *http.Request) {
-		HeartbeatHandler(db)(w, r)
+		HeartbeatHandler(db, plausibleTracker)(w, r)
 	})
 
 	http.HandleFunc("GET /stats", func(w http.ResponseWriter, r *http.Request) {

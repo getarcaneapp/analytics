@@ -14,13 +14,13 @@ Only minimal, non-identifiable data is collected, and analytics can be completel
 
 The server stores only the following information:
 
-| Field            | Description                                                |
-| :--------------- | :--------------------------------------------------------- |
+| Field            | Description                                            |
+| :--------------- | :----------------------------------------------------- |
 | **Instance ID**  | A unique, non-identifiable UUID for the Arcaneinstance |
-| **First seen**   | Timestamp when the instance first sent a heartbeat         |
-| **Last seen**    | Timestamp of the most recent heartbeat                     |
+| **First seen**   | Timestamp when the instance first sent a heartbeat     |
+| **Last seen**    | Timestamp of the most recent heartbeat                 |
 | **Last version** | Version of the Arcaneinstance                          |
-| **Server type**  | Instance role (`manager` or `agent`)                       |
+| **Server type**  | Instance role (`manager` or `agent`)                   |
 
 ### Activity Status
 

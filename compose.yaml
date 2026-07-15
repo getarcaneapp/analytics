@@ -11,7 +11,12 @@ services:
     volumes:
       - analytics-data:/app/data
     environment:
-      - PORT=8080
+      PORT: ${PORT:-8080}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      PLAUSIBLE_BASE_URL: ${PLAUSIBLE_BASE_URL:-}
+      PLAUSIBLE_API_TOKEN: ${PLAUSIBLE_API_TOKEN:-}
+      PLAUSIBLE_DOMAIN: ${PLAUSIBLE_DOMAIN:-}
+      PLAUSIBLE_EVENT_URL: ${PLAUSIBLE_EVENT_URL:-}
 
 volumes:
   analytics-data:
