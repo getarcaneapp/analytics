@@ -239,7 +239,7 @@ func TestPlausibleBackfillResumesAfterFailure(t *testing.T) {
 
 func newPlausibleBackfillTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := sql.Open("sqlite", ":memory:?_time_format=sqlite")
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}

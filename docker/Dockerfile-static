@@ -1,0 +1,11 @@
+FROM gcr.io/distroless/static-debian13
+
+ARG TARGETPLATFORM
+
+WORKDIR /app
+COPY ${TARGETPLATFORM}/pocket-id-analytics ./pocket-id-analytics
+
+EXPOSE 8080
+VOLUME ["/app/data"]
+
+ENTRYPOINT ["./pocket-id-analytics"]

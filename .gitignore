@@ -3,6 +3,7 @@
 
 # Output
 .output
+/dist/
 
 # OS
 .DS_Store

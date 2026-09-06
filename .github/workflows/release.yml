@@ -1,0 +1,64 @@
+name: Release Analytics
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.ref_type == 'tag' && 'analytics-release' || 'analytics-next' }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: depot-ubuntu-24.04-8
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Test
+        run: go test -race -shuffle=on ./...
+
+      - name: Set up Depot CLI
+        uses: depot/setup-action@v1
+        with:
+          configure-docker: true
+
+      - name: Login to container registries
+        uses: docker/login-action@v4
+        with:
+          registry-auth: |
+            - registry: ghcr.io
+              username: ${{ github.repository_owner }}
+              password: ${{ secrets.GITHUB_TOKEN }}
+            - registry: docker.io
+              username: ${{ secrets.DOCKER_USER }}
+              password: ${{ secrets.DOCKER_PAT }}
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser-pro
+          version: '~> v2'
+          args: release --clean ${{ github.ref_type != 'tag' && '--nightly' || '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_KEY: ${{ secrets.GORELEASER_KEY }}
+          BUILD_NEXT: ${{ github.ref_type != 'tag' && 'true' || 'false' }}

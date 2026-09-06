@@ -20,7 +20,7 @@ func TestHeartbeatHandlerTracksSuccessfulHeartbeat(t *testing.T) {
 	t.Setenv("TRUST_PROXY", "false")
 	resetHeartbeatLimits(t)
 
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := sql.Open("sqlite", ":memory:?_time_format=sqlite")
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}

@@ -7,7 +7,9 @@ import (
 	"os"
 	"time"
 
-	_ "github.com/glebarez/go-sqlite"
+	"github.com/pocket-id/analytics/pkg/utils/sqlutil"
+
+	_ "modernc.org/sqlite"
 )
 
 type InstancesStats struct {
@@ -38,8 +40,7 @@ func DoesInstanceExist(parentCtx context.Context, db *sql.DB, instanceID string)
 
 	ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
 	defer cancel()
-	var exists bool
-	err := db.QueryRowContext(ctx, query, instanceID).Scan(&exists)
+	exists, err := sqlutil.QueryScalar[bool](ctx, db, query, instanceID)
 	if err != nil {
 		return false, fmt.Errorf("failed to check instance existence: %w", err)
 	}
@@ -84,9 +85,7 @@ func GetTotalInstances(parentCtx context.Context, db *sql.DB) (int, error) {
 
 	ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
 	defer cancel()
-	var count int
-	err := db.QueryRowContext(ctx, query).Scan(&count)
-	return count, err
+	return sqlutil.QueryScalar[int](ctx, db, query)
 }
 
 func GetInactiveInstances(parentCtx context.Context, db *sql.DB) (int, error) {
@@ -98,9 +97,7 @@ func GetInactiveInstances(parentCtx context.Context, db *sql.DB) (int, error) {
 
 	ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
 	defer cancel()
-	var count int
-	err := db.QueryRowContext(ctx, query).Scan(&count)
-	return count, err
+	return sqlutil.QueryScalar[int](ctx, db, query)
 }
 
 func GetInstancesByType(parentCtx context.Context, db *sql.DB) (map[string]int, error) {
@@ -121,27 +118,7 @@ func GetInstancesByType(parentCtx context.Context, db *sql.DB) (map[string]int, 
 
 	ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
 	defer cancel()
-	rows, err := db.QueryContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	counts := make(map[string]int)
-	for rows.Next() {
-		var serverType string
-		var count int
-		if err := rows.Scan(&serverType, &count); err != nil {
-			return nil, err
-		}
-		counts[serverType] = count
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	return counts, nil
+	return sqlutil.QueryMap[string, int](ctx, db, query)
 }
 
 func GetInstancesByVersion(parentCtx context.Context, db *sql.DB) (map[string]int, error) {
@@ -156,27 +133,7 @@ func GetInstancesByVersion(parentCtx context.Context, db *sql.DB) (map[string]in
 
 	ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
 	defer cancel()
-	rows, err := db.QueryContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	counts := make(map[string]int)
-	for rows.Next() {
-		var version string
-		var count int
-		if err := rows.Scan(&version, &count); err != nil {
-			return nil, err
-		}
-		counts[version] = count
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	return counts, nil
+	return sqlutil.QueryMap[string, int](ctx, db, query)
 }
 
 func GetInstancesOverTime(parentCtx context.Context, db *sql.DB, timeframe string) ([]InstancesHistory, error) {
@@ -352,7 +309,7 @@ func initDB() (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to create data directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", "./data/pocket-id-analytics.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_txlock=immediate")
+	db, err := sql.Open("sqlite", "./data/pocket-id-analytics.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_txlock=immediate&_time_format=sqlite")
 	if err != nil {
 		return nil, err
 	}

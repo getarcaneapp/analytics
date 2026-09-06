@@ -1,0 +1,74 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema-pro.json
+version: 2
+pro: true
+
+project_name: arcane-analytics
+
+builds:
+  - id: analytics
+    main: .
+    binary: pocket-id-analytics
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    tags:
+      - timetzdata
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+
+checksum:
+  name_template: '{{ .ProjectName }}_{{ .Version }}_checksums.txt'
+
+nightly:
+  version_template: '0.0.0-next.{{ .Timestamp }}.{{ .ShortCommit }}'
+
+dockers_v2:
+  - id: analytics-image
+    ids:
+      - analytics
+    dockerfile: docker/Dockerfile-static
+    images:
+      - ghcr.io/getarcaneapp/analytics
+      - getarcaneapp/analytics
+    tags:
+      - '{{ if eq (index .Env "BUILD_NEXT") "true" }}next{{ end }}'
+      - 'v{{ .Version }}'
+      - '{{ if and (ne (index .Env "BUILD_NEXT") "true") (not .Prerelease) }}v{{ .Major }}.{{ .Minor }}{{ end }}'
+      - '{{ if and (ne (index .Env "BUILD_NEXT") "true") (not .Prerelease) }}v{{ .Major }}{{ end }}'
+      - '{{ if and (ne (index .Env "BUILD_NEXT") "true") (not .Prerelease) }}latest{{ end }}'
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.title: Arcane Analytics
+      org.opencontainers.image.description: Heartbeat analytics for Arcane deployments
+      org.opencontainers.image.source: https://github.com/getarcaneapp/analytics
+      org.opencontainers.image.version: '{{ .Version }}'
+      org.opencontainers.image.revision: '{{ .FullCommit }}'
+    sbom: true
+    flags:
+      - --provenance=true
+
+changelog:
+  sort: asc
+
+release:
+  github:
+    owner: getarcaneapp
+    name: analytics
+  disable: '{{ eq (index .Env "BUILD_NEXT") "true" }}'
+  draft: false
+  prerelease: auto
+  name_template: '{{ .Tag }}'
