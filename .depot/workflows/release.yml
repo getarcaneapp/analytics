@@ -14,7 +14,6 @@ concurrency:
 
 permissions:
   contents: write
-  packages: write
   id-token: write
 
 jobs:
@@ -46,8 +45,8 @@ jobs:
         with:
           registry-auth: |
             - registry: ghcr.io
-              username: ${{ github.repository_owner }}
-              password: ${{ secrets.GITHUB_TOKEN }}
+              username: ${{ vars.GHCR_USERNAME }}
+              password: ${{ secrets.ARCANE_BOT_TOKEN }}
             - registry: docker.io
               username: ${{ secrets.DOCKER_USER }}
               password: ${{ secrets.DOCKER_PAT }}
